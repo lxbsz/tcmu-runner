@@ -198,6 +198,9 @@ static int generic_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	uint64_t num_lbas = tcmu_get_dev_num_lbas(dev);
 
 	switch (cdb[0]) {
+	case RESERVE:
+	case RELEASE:
+		return SAM_STAT_GOOD;
 	case INQUIRY:
 		return tcmu_emulate_inquiry(dev, cdb, iovec, iov_cnt, sense);
 	case TEST_UNIT_READY:
@@ -270,6 +273,8 @@ static bool command_is_generic(struct tcmulib_cmd *tcmulib_cmd)
 	uint8_t *cdb = tcmulib_cmd->cdb;
 
 	switch(cdb[0]) {
+	case RESERVE:
+	case RELEASE:
 	case INQUIRY:
 	case TEST_UNIT_READY:
 	case MODE_SENSE:
