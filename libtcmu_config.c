@@ -25,6 +25,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 
+#include "darray.h"
 #include "libtcmu_config.h"
 #include "libtcmu_log.h"
 
@@ -80,6 +81,9 @@
  * tcmu-runner, consumer and tcmu-synthesizer daemons should be restarted.
  * And the dynamic reloading feature will be added later.
  */
+
+static darray(struct tcmu_conf_option) tcmu_options = darray_new();
+#if 0
 static struct tcmu_conf_option tcmu_options[] = {
 	{
 		.key = "log_level",
@@ -95,56 +99,67 @@ static struct tcmu_conf_option tcmu_options[] = {
 		{},
 	},
 };
-
-static int tcmu_get_option_index(const char *key)
+#endif
+static struct tcmu_conf_option * tcmu_get_option(const char *key)
 {
-	int i = 0;
+	struct tcmu_conf_option *option;
 
-	while (tcmu_options[i].key != NULL) {
-		if (!strcmp(tcmu_options[i].key, key))
-			return i;
-		i++;
+	darray_foreach(option, tcmu_options) {
+		if (!strcmp(option->key, key))
+			return option;
 	}
 
-	return -1;
+	return NULL;
 }
 
 #define TCMU_PARSE_CFG_INT(cfg, key) \
 do { \
-	int ind = tcmu_get_option_index(#key); \
-	if (ind >= 0) { \
-		cfg->key = tcmu_options[ind].opt_int; \
+	struct tcmu_conf_option *option; \
+	option = tcmu_get_option(#key); \
+	if (option) { \
+		cfg->key = option->opt_int; \
 	} \
 } while (0)
 
 #define TCMU_PARSE_CFG_BOOL(cfg, key) \
 do { \
-	int ind = tcmu_get_option_index(#key); \
-	if (ind >= 0) { \
-		cfg->key = tcmu_options[ind].opt_bool; \
+	struct tcmu_conf_option *option; \
+	option = tcmu_get_option(#key); \
+	if (option) { \
+		cfg->key = option->opt_bool; \
 	} \
 } while (0)
 
 #define TCMU_PARSE_CFG_STR(cfg, key) \
 do { \
-	int ind = tcmu_get_option_index(#key); \
-	if (ind >= 0) { \
-		cfg->key = strdup(tcmu_options[ind].opt_str); } \
+	struct tcmu_conf_option *option; \
+	option = tcmu_get_option(#key); \
+	if (option) { \
+		cfg->key = strdup(option->opt_str); } \
 } while (0);
 
 #define TCMU_FREE_CFG_STR(cfg, key) \
 do { \
+	struct tcmu_conf_option *option; \
 	cfg->key = NULL; \
-	free(tcmu_options[i]->opt_str); \
+	darray_foreach(option, tcmu_options) { \
+		if (!strcmp(option->key, key)) { \
+			free(option->opt_str); \
+			break; \
+		} \
+	} \
 } while (0);
 
 #define TCMU_CONF_CHECK_LOG_LEVEL(key) \
 do { \
-	int ind = tcmu_get_option_index(#key); \
-	if (tcmu_options[ind].opt_int > TCMU_CONF_LOG_LEVEL_MAX) { \
-		tcmu_options[ind].opt_int = TCMU_CONF_LOG_LEVEL_MAX; \
-	} else if (tcmu_options[ind].opt_int < TCMU_CONF_LOG_LEVEL_MIN) { \
-		tcmu_options[ind].opt_int = TCMU_CONF_LOG_LEVEL_MIN; \
+	struct tcmu_conf_option *option; \
+	option = tcmu_get_option(#key); \
+	if (!option) \
+		return; \
+	if (option->opt_int > TCMU_CONF_LOG_LEVEL_MAX) { \
+		option->opt_int = TCMU_CONF_LOG_LEVEL_MAX; \
+	} else if (option->opt_int < TCMU_CONF_LOG_LEVEL_MIN) { \
+		option->opt_int = TCMU_CONF_LOG_LEVEL_MIN; \
 	} \
 } while (0);
 
@@ -223,8 +238,8 @@ static int tcmu_read_config(int fd, char *buf, int count)
 
 static void tcmu_parse_option(char **cur, const char *end)
 {
+	struct tcmu_conf_option *option;
 	char *p = *cur, *q = *cur, *r, *s;
-	int ind;
 
 	while (isblank(*p))
 		p++;
@@ -241,11 +256,11 @@ static void tcmu_parse_option(char **cur, const char *end)
 		while (!isblank(*r) && r < q)
 			r++;
 		*r = '\0';
-		ind = tcmu_get_option_index(p);
-		if (ind < 0)
+		option = tcmu_get_option(p);
+		if (!option)
 			return;
 
-		tcmu_options[ind].opt_bool = true;
+		option->opt_bool = true;
 
 		return;
 	}
@@ -254,12 +269,12 @@ static void tcmu_parse_option(char **cur, const char *end)
 		r--;
 	r++;
 	*r = '\0';
-	ind = tcmu_get_option_index(p);
-	if (ind < 0)
+	option = tcmu_get_option(p);
+	if (!option)
 		return;
 
 	/* parse the int/string type options */
-	switch (tcmu_options[ind].type) {
+	switch (option->type) {
 	case TCMU_OPT_INT:
 		while (!isdigit(*s))
 			s++;
@@ -267,7 +282,7 @@ static void tcmu_parse_option(char **cur, const char *end)
 		while (isdigit(*r))
 			r++;
 		*r= '\0';
-		tcmu_options[ind].opt_int = atoi(s);
+		option->opt_int = atoi(s);
 		break;
 	case TCMU_OPT_STR:
 		s++;
@@ -283,7 +298,7 @@ static void tcmu_parse_option(char **cur, const char *end)
 		if (*r == '"' || *r == '\'')
 			*r = '\0';
 
-		tcmu_options[ind].opt_str = strdup(s);
+		option->opt_str = strdup(s);
 		break;
 	default:
 		break;
