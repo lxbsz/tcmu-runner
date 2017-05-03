@@ -93,8 +93,8 @@ int tcmu_emulate_read_capacity_10(uint64_t num_lbas, uint32_t block_size, uint8_
 				  struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
 int tcmu_emulate_read_capacity_16(uint64_t num_lbas, uint32_t block_size, uint8_t *cdb,
 				  struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
-int tcmu_emulate_mode_sense(uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
-int tcmu_emulate_mode_select(uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
+int tcmu_emulate_mode_sense(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
+int tcmu_emulate_mode_select(struct tcmu_device *dev, uint8_t *cdb, struct iovec *iovec, size_t iov_cnt, uint8_t *sense);
 
 #ifdef __cplusplus
 }

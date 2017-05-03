@@ -543,6 +543,7 @@ int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 			ret = handle_flush(dev, cmd);
 		break;
 	case COMPARE_AND_WRITE:
+		printf("lxb----------------------------------------------\n");
 		ret = handle_caw(dev, cmd);
 		break;
 	case WRITE_VERIFY:
@@ -553,6 +554,8 @@ int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		/* Try to passthrough the default cmds */
 		if (rhandler->handle_cmd)
 			ret = handle_passthrough(dev, cmd);
+		else
+			tcmu_dbg("unknown command %x ++++++++++++++++++++++++++++++\n", cdb[0]);
 	}
 
 	if (ret != TCMU_ASYNC_HANDLED)
