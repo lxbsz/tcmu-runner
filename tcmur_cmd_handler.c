@@ -18,9 +18,13 @@
 #include <scsi/scsi.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 
 #include "ccan/list/list.h"
 
+#include "darray.h"
 #include "libtcmu.h"
 #include "libtcmu_log.h"
 #include "libtcmu_priv.h"
@@ -288,6 +292,626 @@ out:
 	return ret;
 }
 
+#define XCOPY_HDR_LEN                   16
+#define XCOPY_TARGET_DESC_LEN           32
+#define XCOPY_SEGMENT_DESC_B2B_LEN      28
+#define XCOPY_NAA_IEEE_REGEX_LEN        16
+#define XCOPY_MAX_SECTORS               1024
+
+struct xcopy {
+
+	struct tcmu_device *src_dev;
+	uint8_t src_tid_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+	struct tcmu_device *dst_dev;
+	uint8_t dst_tid_wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+
+	uint64_t src_lba;
+	uint64_t dst_lba;
+	unsigned long stdi;
+	unsigned long dtdi;
+	unsigned long nolb;
+};
+
+/* EXTENDED COPY segment descriptor type codes */
+#define XCOPY_SEG_DESC_TYPE_CODE_B2B    0x02
+
+/* For now only supports block -> block type */
+static int xcopy_parse_segment_descs(uint8_t *seg_descs, struct xcopy *xcopy,
+				     uint8_t sdll, uint8_t *sense)
+{
+	uint8_t *seg_desc = seg_descs;
+	uint8_t desc_len;
+
+	/*
+	 * From spc4r31, section 6.3.7.5 Block device to block device
+	 * operations
+	 *
+	 * The segment descriptor size should be 28 bytes
+	 */
+	if (sdll % XCOPY_SEGMENT_DESC_B2B_LEN != 0) {
+		tcmu_err("Illegal block --> block type segment descriptor length %u\n",
+			 sdll);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	if (sdll > RCR_OP_MAX_SG_DESC_COUNT * XCOPY_SEGMENT_DESC_B2B_LEN) {
+		tcmu_err("Only %u segment descriptor(s) supported, but there are %u\n",
+			 RCR_OP_MAX_SG_DESC_COUNT,
+			 sdll / XCOPY_SEGMENT_DESC_B2B_LEN);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	if (seg_desc[0] != XCOPY_SEG_DESC_TYPE_CODE_B2B) {
+		tcmu_err("Unsupport segment descriptor type code 0x%x\n",
+			 seg_desc[0]);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_UNSUPPORTED_SEGMENT_DESC_TYPE_CODE,
+					   NULL);
+	}
+
+	/*
+	 * For block -> block type the length is 4-byte header + 0x18-byte
+	 * data.
+	 */
+	desc_len = be16toh(seg_desc[2]);
+	if (desc_len != 0x18) {
+		tcmu_err("Invalid length for block->block type 0x%x\n",
+			 desc_len);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	/*
+	 * From spc4r31, section 6.3.7.1 Segment descriptors introduction
+	 *
+	 * The SOURCE TARGET DESCRIPTOR INDEX field contains an index into
+	 * the target descriptor list (see 6.3.1) identifying the source
+	 * copy target device. The DESTINATION TARGET DESCRIPTOR INDEX field
+	 * contains an index into the target descriptor list (see 6.3.1)
+	 * identifying the destination copy target device.
+	 */
+	xcopy->stdi = be16toh(seg_desc[4]);
+	xcopy->dtdi = be16toh(seg_desc[6]);
+	tcmu_dbg("Segment descriptor: stdi: %hu dtdi: %hu\n", xcopy->stdi,
+		 xcopy->dtdi);
+
+	xcopy->nolb = be16toh(seg_desc[10]);
+	xcopy->src_lba = be64toh(seg_desc[12]);
+	xcopy->dst_lba = be64toh(seg_desc[20]);
+	tcmu_dbg("Segment descriptor: nolb: %hu src_lba: %llu dst_lba: %llu\n",
+		 xcopy->nolb, xcopy->src_lba, xcopy->dst_lba);
+
+	return SAM_STAT_GOOD;
+}
+
+static int xcopy_gen_naa_ieee(struct tcmu_device *udev, uint8_t *wwn)
+{
+	char *buf, *p, ch;
+	bool next = true;
+	int ind = 0;
+
+	/* */
+	wwn[ind++] = (0x6 << 4);
+	wwn[ind++] = 0x01;
+	wwn[ind++] = 0x40;
+	wwn[ind] = (0x5 << 4);
+
+	/* Parse the udev vpd unit serial number */
+	buf = tcmu_get_wwn(udev);
+	if (!buf)
+		return -1;
+	p = buf;
+
+	/*
+	 * Generate up to 36 bits of VENDOR SPECIFIC IDENTIFIER starting on
+	 * byte 3 bit 3-0 for NAA IEEE Registered Extended DESIGNATOR field
+	 * format, followed by 64 bits of VENDOR SPECIFIC IDENTIFIER EXTENSION
+	 * to complete the payload.  These are based from VPD=0x80 PRODUCT SERIAL
+	 * NUMBER set via vpd_unit_serial in target_core_configfs.c to ensure
+	 * per device uniqeness.
+	 */
+	for (; *p && ind < XCOPY_NAA_IEEE_REGEX_LEN; p++) {
+		int val;
+
+		ch = *p;
+		if ((ch >= '0') && (ch <= '9'))
+			val = ch - '0';
+		else if ((ch >= 'a') && (ch <= 'f'))
+			val = ch - 'a' + 10;
+		else if ((ch >= 'A') && (ch <= 'F'))
+			val = ch - 'A' + 10;
+		else
+			continue;
+
+		if (next) {
+			next = false;
+			wwn[ind++] |= val;
+		} else {
+			next = true;
+			wwn[ind] = val << 4;
+		}
+	}
+
+	free(buf);
+	return SAM_STAT_GOOD;
+}
+
+static int xcopy_locate_udev(struct tcmulib_context *ctx,
+			     const uint8_t *dev_wwn,
+			     struct tcmu_device **udev)
+{
+	struct tcmu_device **dev_ptr;
+	struct tcmu_device *dev;
+	uint8_t wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+
+	darray_foreach(dev_ptr, ctx->devices) {
+		dev = *dev_ptr;
+
+		memset(wwn, 0, XCOPY_NAA_IEEE_REGEX_LEN);
+		xcopy_gen_naa_ieee(dev, wwn);
+
+		if (memcmp(wwn, dev_wwn, XCOPY_NAA_IEEE_REGEX_LEN))
+			continue;
+
+		*udev = dev;
+		tcmu_dbg("Located tcmu devivce: %s\n", dev->dev_name);
+
+		return SAM_STAT_GOOD;
+	}
+
+	return -1;
+}
+
+/* Identification descriptor target */
+static int xcopy_parse_target_id(struct tcmu_device *udev,
+				  struct xcopy *xcopy,
+				  uint8_t *tgt_desc,
+				  int32_t index,
+				  uint8_t *sense)
+{
+	uint8_t wwn[XCOPY_NAA_IEEE_REGEX_LEN];
+
+	/*
+	 * Generate an IEEE Registered Extended designator based upon the
+	 * device the XCOPY specified.
+	 */
+	memset(wwn, 0, XCOPY_NAA_IEEE_REGEX_LEN);
+	xcopy_gen_naa_ieee(udev, wwn);
+
+	/*
+	 * CODE SET: for now only binary type code is supported.
+	 */
+	if ((tgt_desc[4] & 0x0f) != 0x1) {
+		tcmu_err("Id target CODE DET only support binary type!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	/*
+	 * ASSOCIATION: for now only LUN type code is supported.
+	 */
+	if ((tgt_desc[5] & 0x30) != 0x00) {
+		tcmu_err("Id target ASSOCIATION other than LUN not supported!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	/*
+	 * DESIGNATOR TYPE: for now only NAA type code is supported.
+	 *
+	 * The designator type define please see: such as
+	 * From spc4r31, section 7.8.6.1 Device Identification VPD page
+	 * overview
+	 */
+	if ((tgt_desc[5] & 0x0f) != 0x3) {
+		tcmu_err("Id target DESIGNATOR TYPE other than NAA not supported!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+	/*
+	 * Check for matching 16 byte length for NAA IEEE Registered Extended
+	 * Assigned designator
+	 */
+	if (tgt_desc[7] != 16) {
+		tcmu_err("Id target DESIGNATOR LENGTH should be 16, but it's: %d\n",
+			 tgt_desc[7]);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	/*
+	 * Check for NAA IEEE Registered Extended Assigned header.
+	 */
+	if ((tgt_desc[8] >> 4) != 0x06) {
+		tcmu_err("Id target NAA designator type: 0x%x\n",
+			 tgt_desc[8] >> 4);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	if (index == xcopy->stdi) {
+		memcpy(&xcopy->src_tid_wwn[0], &tgt_desc[8],
+		       XCOPY_NAA_IEEE_REGEX_LEN);
+		/*
+		 * Determine if the source designator matches the local device
+		 */
+		if (!memcmp(wwn, xcopy->src_tid_wwn,
+				XCOPY_NAA_IEEE_REGEX_LEN)) {
+			xcopy->src_dev = udev;
+			tcmu_dbg("Id target source device == curent deivce!\n");
+		}
+	}
+
+	if (index == xcopy->dtdi) {
+		memcpy(&xcopy->dst_tid_wwn[0], &tgt_desc[8],
+		       XCOPY_NAA_IEEE_REGEX_LEN);
+		/*
+		 * Determine if the destination designator matches the local
+		 * device.
+		 */
+		if (!memcmp(wwn, &xcopy->dst_tid_wwn[0],
+				XCOPY_NAA_IEEE_REGEX_LEN)) {
+			xcopy->dst_dev = udev;
+			tcmu_dbg("Id target destination device == curent deivce!\n");
+		}
+	}
+
+	return SAM_STAT_GOOD;
+}
+
+/* EXTENDED COPY Identification descriptor target descriptor */
+#define XCOPY_TARGET_DESC_TYPE_CODE_ID    0xe4
+static int xcopy_parse_target_descs(struct tcmu_device *udev,
+				    struct xcopy *xcopy,
+				    uint8_t *tgt_desc,
+				    uint16_t tdll,
+				    uint8_t *sense)
+{
+	int i, ret;
+
+	if (tdll > RCR_OP_MAX_TARGET_DESC_COUNT * XCOPY_TARGET_DESC_LEN) {
+		tcmu_err("Only %u target descriptor(s) supported, but there are %u\n",
+			 RCR_OP_MAX_TARGET_DESC_COUNT, tdll / XCOPY_TARGET_DESC_LEN);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					   NULL);
+	}
+
+	for (i = 0; i < RCR_OP_MAX_TARGET_DESC_COUNT; i++) {
+		/*
+		 * Only Identification Descriptor Target Descriptor support
+		 * for now.
+		 */
+		if (tgt_desc[0] == XCOPY_TARGET_DESC_TYPE_CODE_ID) {
+			ret = xcopy_parse_target_id(udev, xcopy, tgt_desc, i, sense);
+			if (ret != SAM_STAT_GOOD)
+				return ret;
+
+			tgt_desc += XCOPY_TARGET_DESC_LEN;
+		} else {
+			tcmu_err("Unsupport target descriptor type code 0x%x\n",
+				 tgt_desc[0]);
+			return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+						   ASC_UNSUPPORTED_TARGET_DESC_TYPE_CODE,
+						   NULL);
+		}
+	}
+
+	if (xcopy->src_dev)
+		ret = xcopy_locate_udev(udev->ctx, xcopy->dst_tid_wwn,
+					&xcopy->dst_dev);
+	else if (xcopy->dst_dev)
+		ret = xcopy_locate_udev(udev->ctx, xcopy->src_tid_wwn,
+					&xcopy->src_dev);
+	else
+		ret = SAM_STAT_CHECK_CONDITION;
+
+	if (ret != SAM_STAT_GOOD) {
+		tcmu_err("Target device not found, the index are stdi: %hu dtdi: %hu\n",
+			 xcopy->stdi, xcopy->dtdi);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_UNSUPPORTED_TARGET_DESC_TYPE_CODE,
+					   NULL);
+	}
+
+	tcmu_dbg("Target desccriptor Source device NAA IEEE WWN: 0x%16phN\n",
+		 xcopy->src_tid_wwn);
+	tcmu_dbg("Target desccriptor Destination device NAA IEEE WWN: 0x%16phN\n",
+		 xcopy->dst_tid_wwn);
+
+	return SAM_STAT_GOOD;
+}
+
+static int xcopy_parse_parameter_list(struct tcmu_device *dev,
+				      struct tcmulib_cmd *cmd,
+				      struct xcopy *xcopy)
+{
+	uint8_t *cdb = cmd->cdb;
+	size_t data_length = tcmu_get_xfer_length(cdb);
+	struct iovec *iovec = cmd->iovec;
+	size_t iov_cnt = cmd->iov_cnt;
+	uint8_t *sense = cmd->sense_buf;
+	uint32_t inline_dl;
+	uint8_t *seg_desc, *tgt_desc, *par;
+	uint16_t sdll, tdll;
+	unsigned long parlen;
+	int i, ret;
+
+	/*
+	 * The PARAMETER LIST LENGTH field specifies the length in bytes
+	 * of the parameter data that shall be contained in the Data-Out
+	 * Buffer.
+	*/
+	for (i = 0; i < iov_cnt; i++) {
+		parlen += iovec->iov_len;
+		iovec++;
+	}
+	par = malloc(parlen);
+	if (!par) {
+		tcmu_err("malloc parameter list buffer error\n");
+		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
+					   ASC_INTERNAL_TARGET_FAILURE,
+					   NULL);
+	}
+
+	/*
+	 * From spc4r31, section 6.3.6.1 Target descriptors introduction
+	 *
+	 * All target descriptors (see table 108) are 32 bytes or 64 bytes
+	 * in length
+	 */
+	tdll = be16toh(par[2]);
+	if (tdll % 32 != 0) {
+		tcmu_err("Illegal target descriptor length %u\n", tdll);
+		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					  ASC_PARAMETER_LIST_LENGTH_ERROR,
+					  NULL);
+		goto err;
+	}
+
+	/*
+	 * From spc4r31, section 6.3.7.1 Segment descriptors introduction
+	 *
+	 * Segment descriptors (see table 120) begin with an eight byte header.
+	 */
+	sdll = be32toh(par[8]);
+	if (sdll < 8) {
+		tcmu_err("Illegal segment descriptor length %u\n", tdll);
+		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					  ASC_PARAMETER_LIST_LENGTH_ERROR,
+					  NULL);
+		goto err;
+	}
+
+	/*
+	 * The maximum length of the target and segment descriptors permitted
+	 * within a parameter list is indicated by the MAXIMUM DESCRIPTOR LIST
+	 * LENGTH field in the copy managers operating parameters.
+	 */
+	if (tdll + sdll > RCR_OP_MAX_DESC_LIST_LEN) {
+		tcmu_err("descriptor list length %u exceeds maximum %u\n",
+		       tdll + sdll, RCR_OP_MAX_DESC_LIST_LEN);
+		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					  ASC_PARAMETER_LIST_LENGTH_ERROR,
+					  NULL);
+		goto err;
+	}
+
+	/*
+	 * The INLINE DATA LENGTH field contains the number of bytes of inline
+	 * data, after the last segment descriptor.
+	 * */
+	inline_dl = be32toh(par[12]);
+
+	/* From spc4r31, section 6.3.1 EXTENDED COPY command introduction
+	 *
+	 * The EXTENDED COPY parameter list (see table 104) begins with a 16
+	 * byte header.
+	 *
+	 * The data length in CDB should be equal to tdll + sdll + inline_dl
+	 * + parameter list header length
+	 */
+	if (data_length < (XCOPY_HDR_LEN + tdll + sdll + inline_dl + 16)) {
+		tcmu_err("Illegal parameter list length: data length from CDB is %u,"
+			 " but here the length is %u\n",
+			 data_length, tdll + sdll + inline_dl);
+		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					  ASC_PARAMETER_LIST_LENGTH_ERROR,
+					  NULL);
+		goto err;
+	}
+
+	tcmu_dbg("Processing XCOPY with tdll: %hu sdll: %u inline_dl: %u\n",
+		 tdll, sdll, inline_dl);
+
+	/*
+	 * Parse the segment descripters and for now we only support block
+	 * -> block type.
+	 *
+	 * The max seg_desc number support is 1(see RCR_OP_MAX_SG_DESC_COUNT)
+	 */
+	seg_desc = par + XCOPY_HDR_LEN + tdll;
+	ret = xcopy_parse_segment_descs(seg_desc, xcopy, sdll, sense);
+	if (ret != SAM_STAT_GOOD)
+		goto err;
+
+	/*
+	 * Parse the target descripter
+	 *
+	 * The max seg_desc number support is 2(see RCR_OP_MAX_TARGET_DESC_COUNT)
+	 */
+	tgt_desc = par + XCOPY_HDR_LEN;
+	ret = xcopy_parse_target_descs(dev, xcopy, tgt_desc, tdll, sense);
+	if (ret != SAM_STAT_GOOD)
+		goto err;
+
+	if (tcmu_get_dev_block_size(xcopy->src_dev) !=
+	    tcmu_get_dev_block_size(xcopy->dst_dev)) {
+		tcmu_err("The block size of src dev %u != dst dev %u\n",
+			 tcmu_get_dev_block_size(xcopy->src_dev),
+			 tcmu_get_dev_block_size(xcopy->dst_dev));
+		ret = tcmu_set_sense_data(sense, NOT_READY,
+					  ASC_LOGICAL_UNIT_COMMUNICATION_FAILURE,
+					  NULL);
+		goto err;
+	}
+
+	return SAM_STAT_GOOD;
+
+err:
+	free(par);
+
+	return ret;
+}
+
+#define min(a,b) \
+	({ __typeof__ (a) _a = (a); \
+		__typeof__ (b) _b = (b); \
+		_a < _b ? _a : _b; })
+
+static int xcopy_work_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+{
+	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
+	struct xcopy *xcopy = cmd->cmdstate;
+	struct tcmu_device *src_dev = xcopy->src_dev, *dst_dev = xcopy->dst_dev;
+	uint64_t src_lba = xcopy->src_lba, dst_lba = xcopy->dst_lba, end_lba;
+	unsigned short nolb = xcopy->nolb, cur_nolb, max_nolb, copied_nolb = 0;
+	uint32_t max_sectors, src_max_sectors, dst_max_sectors;
+	struct iovec iovec;
+	size_t iov_cnt;
+	int ret;
+
+	end_lba = src_lba + nolb;
+
+	src_max_sectors = tcmu_get_attribute(src_dev, "hw_max_sectors");
+	dst_max_sectors = tcmu_get_attribute(dst_dev, "hw_max_sectors");
+
+	max_sectors = min(src_max_sectors, dst_max_sectors);
+	max_sectors = min(max_sectors, XCOPY_MAX_SECTORS);
+	max_nolb = min(max_sectors, ((uint16_t)(~0U)));
+
+	tcmu_dbg("target_xcopy_do_work: nolb: %hu, max_nolb: %hu end_lba: %llu\n",
+			nolb, max_nolb, (unsigned long long)end_lba);
+	tcmu_dbg("target_xcopy_do_work: Starting src_lba: %llu, dst_lba: %llu\n",
+			(unsigned long long)src_lba, (unsigned long long)dst_lba);
+
+	iovec.iov_len = min(nolb, max_nolb) * block_size;
+	iovec.iov_base = calloc(1, iovec.iov_len);
+	iov_cnt = 1;
+
+	while (src_lba < end_lba) {
+		cur_nolb = min(nolb, max_nolb);
+
+		tcmu_dbg("target_xcopy_do_work: Calling read src_dev: %p src_lba: %llu,"
+			" cur_nolb: %hu\n", src_dev, (unsigned long long)src_lba, cur_nolb);
+
+		ret = rhandler->read(src_dev, cmd, &iovec, iov_cnt,
+				     tcmu_iovec_length(&iovec, iov_cnt),
+				     block_size * src_lba);
+		if (ret) {
+			free(iovec.iov_base);
+			return ret;
+		}
+
+		src_lba += cur_nolb;
+		tcmu_dbg("target_xcopy_do_work: Incremented READ src_lba to %llu\n",
+				(unsigned long long)src_lba);
+
+		tcmu_dbg("target_xcopy_do_work: Calling write dst_dev: %p dst_lba: %llu,"
+			" cur_nolb: %hu\n", dst_dev, (unsigned long long)dst_lba, cur_nolb);
+
+		ret = rhandler->write(dst_dev, cmd, &iovec, iov_cnt,
+				      tcmu_iovec_length(&iovec, iov_cnt),
+				      block_size * dst_lba);
+		if (ret) {
+			free(iovec.iov_base);
+			return ret;
+		}
+
+		dst_lba += cur_nolb;
+		tcmu_dbg("target_xcopy_do_work: Incremented WRITE dst_lba to %llu\n",
+				(unsigned long long)dst_lba);
+
+		copied_nolb += cur_nolb;
+		nolb -= cur_nolb;
+	}
+
+	free(iovec.iov_base);
+	return SAM_STAT_GOOD;
+}
+
+/* async xcopy */
+static void handle_xcopy_cbk(struct tcmu_device *dev,
+			     struct tcmulib_cmd *cmd, int ret)
+{
+	struct xcopy *xcopy = cmd->cmdstate;
+
+	aio_command_finish(dev, cmd, ret);
+	free(xcopy);
+}
+
+static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+{
+	uint8_t *cdb = cmd->cdb;
+	size_t data_length = tcmu_get_xfer_length(cdb);
+	uint8_t *sense = cmd->sense_buf;
+	struct xcopy *xcopy;
+	int ret;
+
+	/*
+	 * A parameter list length of zero specifies that copy manager
+	 * shall not transfer any data or alter any internal state.
+	 */
+	if (data_length == 0)
+		return SAM_STAT_GOOD;
+
+	/*
+	 * The EXTENDED COPY parameter list begins with a 16 byte header
+	 * that contains the LIST IDENTIFIER field.
+	 */
+	if (data_length < XCOPY_HDR_LEN) {
+		tcmu_err("Illegal parameter list: length %u < hdr_len %u\n",
+				data_length, XCOPY_HDR_LEN);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_PARAMETER_LIST_LENGTH_ERROR,
+					   NULL);
+	}
+
+	xcopy = malloc(sizeof(struct xcopy));
+	if (!xcopy) {
+		tcmu_err("malloc xcopy data error\n");
+		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
+					   ASC_INTERNAL_TARGET_FAILURE,
+					   NULL);
+	}
+
+	/* Parse and check the parameter list */
+	ret = xcopy_parse_parameter_list(dev, cmd, xcopy);
+	if (ret != 0)
+		goto err;
+
+	cmd->cmdstate = xcopy;
+	cmd->done = handle_xcopy_cbk;
+
+	ret = async_handle_cmd(dev, cmd, xcopy_work_fn);
+	if (ret == TCMU_ASYNC_HANDLED)
+		return ret;
+
+err:
+	free(xcopy);
+	return ret;
+}
 /* async compare_and_write */
 
 struct caw_state {
@@ -887,6 +1511,8 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	case RECEIVE_COPY_RESULTS:
 		if ((cdb[1] & 0x1f) == RCR_SA_OPERATING_PARAMETERS)
 			ret = handle_rcr_op(dev, cmd);
+	case EXTENDED_COPY:
+		ret = handle_xcopy(dev, cmd);
 		break;
 	case COMPARE_AND_WRITE:
 		ret = handle_caw(dev, cmd);
