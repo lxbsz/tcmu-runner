@@ -601,6 +601,12 @@ static int handle_generic_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		return tcmu_emulate_inquiry(dev, cdb, iovec, iov_cnt, sense);
 	case TEST_UNIT_READY:
 		return tcmu_emulate_test_unit_ready(cdb, iovec, iov_cnt, sense);
+	case RECEIVE_COPY_RESULTS:
+		if ((cdb[1] & 0x1f) == RCR_SA_OPERATING_PARAMETERS)
+			return handle_receive_copy_results_op(cdb, iovec,
+							      iov_cnt, sense);
+		else
+			return TCMU_NOT_HANDLED;
 	case SERVICE_ACTION_IN_16:
 		if (cdb[1] == READ_CAPACITY_16)
 			return tcmu_emulate_read_capacity_16(num_lbas,
@@ -649,6 +655,9 @@ static bool command_is_generic(struct tcmulib_cmd *cmd)
 	case MODE_SELECT_10:
 	case READ_CAPACITY:
 		return true;
+	case RECEIVE_COPY_RESULTS:
+		if ((cdb[1] & 0x1f) == RCR_SA_OPERATING_PARAMETERS)
+			return true;
 	case SERVICE_ACTION_IN_16:
 		if (cdb[1] == READ_CAPACITY_16)
 			return true;

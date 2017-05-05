@@ -18,6 +18,7 @@
 #define READ_DISC_INFORMATION           0x51
 #define MODE_SELECT_10                  0x55
 #define MODE_SENSE_10                   0x5a
+#define RECEIVE_COPY_RESULTS            0x84
 #define READ_16                         0x88
 #define COMPARE_AND_WRITE               0x89
 #define WRITE_16                        0x8a
@@ -27,6 +28,27 @@
 #define SERVICE_ACTION_IN_16            0x9e
 #define READ_DVD_STRUCTURE              0xad
 #define MECHANISM_STATUS                0xbd
+
+/*
+ * Receive Copy Results Sevice Actions
+ */
+#define RCR_SA_COPY_STATUS              0x00
+#define RCR_SA_RECEIVE_DATA             0x01
+#define RCR_SA_OPERATING_PARAMETERS     0x03
+#define RCR_SA_FAILED_SEGMENT_DETAILS   0x04
+
+/*
+ *  * Receive Copy Results defs for Operating Parameters
+ *   */
+#define RCR_OP_MAX_TARGET_DESC_COUNT    0x2
+#define RCR_OP_MAX_SG_DESC_COUNT        0x1
+#define RCR_OP_MAX_DESC_LIST_LEN        1024
+#define RCR_OP_MAX_SEGMENT_LEN          268435456 /* 256 MB */
+#define RCR_OP_TOTAL_CONCURR_COPIES     0x1 /* Must be <= 16384 */
+#define RCR_OP_MAX_CONCURR_COPIES       0x1 /* Must be <= 255 */
+#define RCR_OP_DATA_SEG_GRAN_LOG2       9 /* 512 bytes in log 2 */
+#define RCR_OP_INLINE_DATA_GRAN_LOG2    9 /* 512 bytes in log 2 */
+#define RCR_OP_HELD_DATA_GRAN_LOG2      9 /* 512 bytes in log 2 */
 
 /*
  * Service action opcodes
