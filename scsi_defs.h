@@ -18,6 +18,7 @@
 #define READ_DISC_INFORMATION           0x51
 #define MODE_SELECT_10                  0x55
 #define MODE_SENSE_10                   0x5a
+#define EXTENDED_COPY                   0x83
 #define RECEIVE_COPY_RESULTS            0x84
 #define READ_16                         0x88
 #define COMPARE_AND_WRITE               0x89
@@ -96,6 +97,8 @@ enum scsi_protocol {
 #define ASC_LBA_OUT_OF_RANGE                    0x2100
 #define ASC_INVALID_FIELD_IN_CDB                0x2400
 #define ASC_INVALID_FIELD_IN_PARAMETER_LIST     0x2600
+#define ASC_UNSUPPORTED_SEGMENT_DESC_TYPE_CODE  0x2609
+#define ASC_UNSUPPORTED_TARGET_DESC_TYPE_CODE	0x2607
 #define ASC_CANT_WRITE_INCOMPATIBLE_FORMAT      0x3005
 #define ASC_SAVING_PARAMETERS_NOT_SUPPORTED     0x3900
 #define ASC_INTERNAL_TARGET_FAILURE             0x4400
