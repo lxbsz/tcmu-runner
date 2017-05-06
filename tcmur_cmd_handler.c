@@ -837,6 +837,9 @@ static int handle_generic_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	uint64_t num_lbas = tcmu_get_dev_num_lbas(dev);
 
 	switch (cdb[0]) {
+	case RESERVE:
+	case RELEASE:
+		return 0;
 	case INQUIRY:
 		return handle_inquiry(dev, cmd);
 	case TEST_UNIT_READY:
@@ -878,6 +881,8 @@ static bool command_is_generic(struct tcmulib_cmd *cmd)
 	uint8_t *cdb = cmd->cdb;
 
 	switch(cdb[0]) {
+	case RESERVE:
+	case RELEASE:
 	case INQUIRY:
 	case TEST_UNIT_READY:
 	case MODE_SENSE:
