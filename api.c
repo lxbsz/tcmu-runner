@@ -345,8 +345,8 @@ int tcmu_emulate_evpd_inquiry(
 
 		/* data[1] (page code) already 0 */
 
-		data[5] = 0x83;
-		data[6] = 0xb0;
+		data[4] = 0x83;
+		data[5] = 0xb0;
 
 		data[3] = 3;
 
@@ -489,6 +489,7 @@ finish_page83:
 		memset(data, 0, sizeof(data));
 
 		data[1] = 0xb0;
+		data[5] = 0x01;
 
 		val16 = htobe16(0x3c);
 		memcpy(&data[2], &val16, 2);
