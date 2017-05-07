@@ -39,6 +39,8 @@ struct tcmulib_cmd;
 #define CFGFS_ROOT "/sys/kernel/config/target"
 #define CFGFS_CORE CFGFS_ROOT"/core"
 
+#define VPD_MAX_WRITE_SAME_LENGTH 0xFFFF
+
 typedef void (*cmd_done_t)(struct tcmu_device *, struct tcmulib_cmd *, int);
 
 struct tcmulib_cmd {

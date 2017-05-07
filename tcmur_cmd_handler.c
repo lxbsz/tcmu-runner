@@ -288,6 +288,94 @@ out:
 	return ret;
 }
 
+static int write_same_16_work_fn(struct tcmu_device *dev,
+				 struct tcmulib_cmd *cmd);
+
+static void handle_write_same_16_cbk(struct tcmu_device *dev,
+				     struct tcmulib_cmd *cmd,
+				     int ret)
+{
+}
+
+static int write_same_16_work_fn(struct tcmu_device *dev,
+				 struct tcmulib_cmd *cmd)
+{
+	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
+	uint32_t blocks = tcmu_get_xfer_length(cmd->cdb);
+	int ret;
+
+	while(blocks--) {
+		ret = rhandler->write(dev, cmd, cmd->iovec, cmd->iov_cnt,
+				      tcmu_iovec_length(cmd->iovec, cmd->iov_cnt),
+				      block_size * tcmu_get_lba(cmd->cdb));
+		if (ret)
+			goto out;
+	}
+
+out:
+	aio_command_finish(dev, cmd, ret);
+	return ret;
+}
+
+static int handle_write_same_16(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+{
+	uint8_t *cdb = cmd->cdb;
+	uint8_t *sense = cmd->sense_buf;
+	uint32_t blocks = tcmu_get_xfer_length(cdb);
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
+
+	tcmu_dbg("Illegal Data-Out: iov_cnt %u length: %u blocks:%u\n",
+			cmd->iov_cnt, cmd->iovec->iov_len, blocks);
+	if (cmd->iov_cnt != 1 || cmd->iovec->iov_len != block_size) {
+		tcmu_err("Illegal Data-Out: iov_cnt %u length: %u\n",
+			 cmd->iov_cnt, cmd->iovec->iov_len);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_CDB,
+					   NULL);
+	}
+
+	/*
+	 * From sbc4r13, section 5.50 WRITE SAME (16) command
+	 *
+	 * A write same (WSNZ) bit has beed set to one, so the device server
+	 * won't support a value of zero here.
+	 */
+	if (!blocks) {
+		tcmu_err("The WSNZ = 1 & WRITE_SAME blocks = 0 is not supported!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_CDB,
+					   NULL);
+	}
+
+	/*
+	 * The MAXIMUM WRITE SAME LENGTH field in Block Limits VPD page (B0h)
+	 * limit the maximum block number for the WRITE SAME.
+	 */
+	if (blocks > VPD_MAX_WRITE_SAME_LENGTH) {
+		tcmu_warn("WRITE_SAME blocks: %u exceeds MAXIMUM WRITE SAME LENGTH: %u\n",
+			  blocks, VPD_MAX_WRITE_SAME_LENGTH);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_CDB,
+					   NULL);
+	}
+
+	/*
+	 * For now not support UNMAP bit and ANCHOR bit.
+	 */
+	if (cdb[1] & 0x10 || cdb[1] & 0x08) {
+		tcmu_err("The ANCHOR or UNMAP bit is set not support!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_CDB,
+					   NULL);
+	}
+
+	cmd->done = handle_write_same_16_cbk;
+	return async_handle_cmd(dev, cmd, write_same_16_work_fn);
+
+	return SAM_STAT_GOOD;
+}
+
 /* async compare_and_write */
 
 struct caw_state {
@@ -769,6 +857,9 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	case WRITE_VERIFY:
 	case WRITE_VERIFY_16:
 		ret = handle_write_verify(dev, cmd);
+		break;
+	case WRITE_SAME_16:
+		ret = handle_write_same_16(dev, cmd);
 		break;
 	case FORMAT_UNIT:
 		ret = handle_format_unit(dev, cmd);
