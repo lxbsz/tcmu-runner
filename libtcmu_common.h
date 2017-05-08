@@ -52,6 +52,7 @@ struct tcmulib_cmd;
 	_a < _b ? _a : _b; })
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define VPD_MAX_WRITE_SAME_LENGTH 0xFFFF
 
 typedef void (*cmd_done_t)(struct tcmu_device *, struct tcmulib_cmd *, int);
 

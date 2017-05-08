@@ -170,7 +170,7 @@ add_executable(consumer
   )
 target_link_libraries(consumer tcmu)
 
-if (with-rbd)
+if (0)
 	find_library(LIBRBD rbd)
 
 	# Stuff for building the rbd handler

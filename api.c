@@ -337,6 +337,7 @@ int tcmu_emulate_evpd_inquiry(
 	size_t iov_cnt,
 	uint8_t *sense)
 {
+		tcmu_dbg("cdb[2] 0x%x -----------------------------------------------------\n", cdb[2]);
 	switch (cdb[2]) {
 	case 0x0: /* Supported VPD pages */
 	{
@@ -487,6 +488,7 @@ finish_page83:
 		int max_xfer_length;
 		uint16_t val16;
 		uint32_t val32;
+		uint64_t val64;
 
 		memset(data, 0, sizeof(data));
 
@@ -494,6 +496,12 @@ finish_page83:
 
 		val16 = htobe16(0x3c);
 		memcpy(&data[2], &val16, 2);
+
+		/* WSNZ = 1: the device server won't support a value of zero
+		 * in the NUMBER OF LOGICAL BLOCKS field in the WRITE SAME
+		 * command CDBs
+		 */
+		data[4] = 0x01;
 
 		/*
 		 * From SCSI Commands Reference Manual, section Block Limits
@@ -529,6 +537,10 @@ finish_page83:
 		/* Optimal xfer length */
 		memcpy(&data[12], &val32, 4);
 
+		/* MAXIMUM WRITE SAME LENGTH */
+		val64 = VPD_MAX_WRITE_SAME_LENGTH;
+		memcpy(&data[36], &val64, 8);
+
 		tcmu_memcpy_into_iovec(iovec, iov_cnt, data, sizeof(data));
 
 		return SAM_STAT_GOOD;
@@ -558,6 +570,7 @@ finish_page83:
 	}
 	break;
 	default:
+		tcmu_dbg("cdb[2] 0x%x not support\n", cdb[2]);
 		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
 					   ASC_INVALID_FIELD_IN_CDB, NULL);
 	}
