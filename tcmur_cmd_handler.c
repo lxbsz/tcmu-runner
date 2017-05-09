@@ -445,7 +445,7 @@ static int xcopy_parse_segment_descs(uint8_t *seg_descs, struct xcopy *xcopy,
 	 * For block -> block type the length is 4-byte header + 0x18-byte
 	 * data.
 	 */
-	desc_len = be16toh(seg_desc[2]);
+	desc_len = be16toh(*(uint16_t *)&seg_desc[2]);
 	if (desc_len != 0x18) {
 		tcmu_err("Invalid length for block->block type 0x%x\n",
 			 desc_len);
@@ -463,14 +463,14 @@ static int xcopy_parse_segment_descs(uint8_t *seg_descs, struct xcopy *xcopy,
 	 * contains an index into the target descriptor list (see 6.3.1)
 	 * identifying the destination copy target device.
 	 */
-	xcopy->stdi = be16toh(seg_desc[4]);
-	xcopy->dtdi = be16toh(seg_desc[6]);
+	xcopy->stdi = be16toh(*(uint16_t *)&seg_desc[4]);
+	xcopy->dtdi = be16toh(*(uint16_t *)&seg_desc[6]);
 	tcmu_dbg("Segment descriptor: stdi: %hu dtdi: %hu\n", xcopy->stdi,
 		 xcopy->dtdi);
 
-	xcopy->nolb = be16toh(seg_desc[10]);
-	xcopy->src_lba = be64toh(seg_desc[12]);
-	xcopy->dst_lba = be64toh(seg_desc[20]);
+	xcopy->nolb = be16toh(*(uint16_t *)&seg_desc[10]);
+	xcopy->src_lba = be64toh(*(uint64_t *)&seg_desc[12]);
+	xcopy->dst_lba = be64toh(*(uint64_t *)&seg_desc[20]);
 	tcmu_dbg("Segment descriptor: nolb: %hu src_lba: %llu dst_lba: %llu\n",
 		 xcopy->nolb, xcopy->src_lba, xcopy->dst_lba);
 
@@ -695,14 +695,17 @@ static int xcopy_parse_target_descs(struct tcmu_device *udev,
 		}
 	}
 
-	if (xcopy->src_dev)
+	if (xcopy->src_dev) {
+	tcmu_dbg("if (xcopy->src_dev) { ---------------------\n");
 		ret = xcopy_locate_udev(udev->ctx, xcopy->dst_tid_wwn,
 					&xcopy->dst_dev);
-	else if (xcopy->dst_dev)
+	} else if (xcopy->dst_dev) {
+	tcmu_dbg("} else if (xcopy->dst_dev) { ---------------------\n");
 		ret = xcopy_locate_udev(udev->ctx, xcopy->src_tid_wwn,
 					&xcopy->src_dev);
-	else
+	} else {
 		ret = SAM_STAT_CHECK_CONDITION;
+	}
 
 	if (ret != SAM_STAT_GOOD) {
 		tcmu_err("Target device not found, the index are stdi: %hu dtdi: %hu\n",
@@ -732,7 +735,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	uint32_t inline_dl;
 	uint8_t *seg_desc, *tgt_desc, *par;
 	uint16_t sdll, tdll;
-	unsigned long parlen;
+	unsigned long parlen = 0, len;
 	int i, ret;
 
 	/*
@@ -744,12 +747,21 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 		parlen += iovec->iov_len;
 		iovec++;
 	}
-	par = malloc(parlen);
+	tcmu_dbg("iov_cnt : %lu parlen = %lu---------------------\n", (unsigned long)iov_cnt, parlen);
+	par = calloc(1, parlen);
 	if (!par) {
 		tcmu_err("malloc parameter list buffer error\n");
 		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
 					   ASC_INTERNAL_TARGET_FAILURE,
 					   NULL);
+	}
+
+	iovec = cmd->iovec;
+	len = 0;
+	for (i = 0; i < iov_cnt; i++) {
+		memcpy(par + len, iovec->iov_base, iovec->iov_len);
+		len += iovec->iov_len;
+		iovec++;
 	}
 
 	/*
@@ -758,7 +770,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	 * All target descriptors (see table 108) are 32 bytes or 64 bytes
 	 * in length
 	 */
-	tdll = be16toh(par[2]);
+	tdll = be16toh(*(uint16_t *)&par[2]);
 	if (tdll % 32 != 0) {
 		tcmu_err("Illegal target descriptor length %u\n", tdll);
 		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
@@ -766,13 +778,15 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 					  NULL);
 		goto err;
 	}
-
+#if 0
 	/*
 	 * From spc4r31, section 6.3.7.1 Segment descriptors introduction
 	 *
 	 * Segment descriptors (see table 120) begin with an eight byte header.
 	 */
-	sdll = be32toh(par[8]);
+#endif
+	sdll = be32toh(*(uint32_t *)&par[8]);
+#if 0
 	if (sdll < 8) {
 		tcmu_err("Illegal segment descriptor length %u\n", tdll);
 		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
@@ -780,7 +794,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 					  NULL);
 		goto err;
 	}
-
+#endif
 	/*
 	 * The maximum length of the target and segment descriptors permitted
 	 * within a parameter list is indicated by the MAXIMUM DESCRIPTOR LIST
@@ -799,7 +813,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	 * The INLINE DATA LENGTH field contains the number of bytes of inline
 	 * data, after the last segment descriptor.
 	 * */
-	inline_dl = be32toh(par[12]);
+	inline_dl = be32toh(*(uint32_t *)&par[12]);
 
 	/* From spc4r31, section 6.3.1 EXTENDED COPY command introduction
 	 *
@@ -809,7 +823,7 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 	 * The data length in CDB should be equal to tdll + sdll + inline_dl
 	 * + parameter list header length
 	 */
-	if (data_length < (XCOPY_HDR_LEN + tdll + sdll + inline_dl + 16)) {
+	if (data_length < (XCOPY_HDR_LEN + tdll + sdll + inline_dl)) {
 		tcmu_err("Illegal parameter list length: data length from CDB is %u,"
 			 " but here the length is %u\n",
 			 data_length, tdll + sdll + inline_dl);
@@ -845,9 +859,10 @@ static int xcopy_parse_parameter_list(struct tcmu_device *dev,
 
 	if (tcmu_get_dev_block_size(xcopy->src_dev) !=
 	    tcmu_get_dev_block_size(xcopy->dst_dev)) {
-		tcmu_err("The block size of src dev %u != dst dev %u\n",
+		tcmu_err("The block size of src dev %u != dst dev %u, udev %u\n",
 			 tcmu_get_dev_block_size(xcopy->src_dev),
-			 tcmu_get_dev_block_size(xcopy->dst_dev));
+			 tcmu_get_dev_block_size(xcopy->dst_dev),
+			 tcmu_get_dev_block_size(dev));
 		ret = tcmu_set_sense_data(sense, NOT_READY,
 					  ASC_LOGICAL_UNIT_COMMUNICATION_FAILURE,
 					  NULL);
@@ -860,6 +875,22 @@ err:
 	free(par);
 
 	return ret;
+}
+
+/* async xcopy */
+static void handle_xcopy_null_cbk(struct tcmu_device *dev,
+				  struct tcmulib_cmd *cmd, int ret)
+{
+}
+
+/* async xcopy */
+static void handle_xcopy_cbk(struct tcmu_device *dev,
+			     struct tcmulib_cmd *cmd, int ret)
+{
+	struct xcopy *xcopy = cmd->cmdstate;
+
+	aio_command_finish(dev, cmd, ret);
+	free(xcopy);
 }
 
 static int xcopy_work_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
@@ -893,6 +924,7 @@ static int xcopy_work_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	iovec.iov_base = calloc(1, iovec.iov_len);
 	iov_cnt = 1;
 
+	cmd->done = handle_xcopy_null_cbk;
 	while (src_lba < end_lba) {
 		cur_nolb = min(nolb, max_nolb);
 
@@ -914,6 +946,8 @@ static int xcopy_work_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		tcmu_dbg("target_xcopy_do_work: Calling write dst_dev: %p dst_lba: %llu,"
 			" cur_nolb: %hu\n", dst_dev, (unsigned long long)dst_lba, cur_nolb);
 
+		if (src_lba >= end_lba)
+			cmd->done = handle_xcopy_cbk;
 		ret = rhandler->write(dst_dev, cmd, &iovec, iov_cnt,
 				      tcmu_iovec_length(&iovec, iov_cnt),
 				      block_size * dst_lba);
@@ -934,16 +968,6 @@ static int xcopy_work_fn(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	return SAM_STAT_GOOD;
 }
 
-/* async xcopy */
-static void handle_xcopy_cbk(struct tcmu_device *dev,
-			     struct tcmulib_cmd *cmd, int ret)
-{
-	struct xcopy *xcopy = cmd->cmdstate;
-
-	aio_command_finish(dev, cmd, ret);
-	free(xcopy);
-}
-
 static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
 	uint8_t *cdb = cmd->cdb;
@@ -952,6 +976,7 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	struct xcopy *xcopy;
 	int ret;
 
+	tcmu_dbg("data_length %lu ----------------------------\n", (unsigned long)data_length);
 	/*
 	 * A parameter list length of zero specifies that copy manager
 	 * shall not transfer any data or alter any internal state.
@@ -971,7 +996,7 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 					   NULL);
 	}
 
-	xcopy = malloc(sizeof(struct xcopy));
+	xcopy = calloc(1, sizeof(struct xcopy));
 	if (!xcopy) {
 		tcmu_err("malloc xcopy data error\n");
 		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
@@ -985,7 +1010,6 @@ static int handle_xcopy(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		goto err;
 
 	cmd->cmdstate = xcopy;
-	cmd->done = handle_xcopy_cbk;
 
 	ret = async_handle_cmd(dev, cmd, xcopy_work_fn);
 	if (ret == TCMU_ASYNC_HANDLED)
@@ -1159,6 +1183,7 @@ static int handle_rcr_op(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	uint8_t buf[128];
 	uint16_t val16;
 	uint32_t val32;
+	tcmu_dbg("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n");
 
 	memset(buf, 0, sizeof(buf));
 
@@ -1268,6 +1293,7 @@ static int handle_rcr_op(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 				ASC_INTERNAL_TARGET_FAILURE, NULL);
 	}
 
+	tcmu_dbg("&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n");
 	return SAM_STAT_GOOD;
 }
 
@@ -1595,6 +1621,7 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		tcmu_dbg("RECEIVE_COPY_RESULTS ----------------------------------------------------\n");
 		if ((cdb[1] & 0x1f) == RCR_SA_OPERATING_PARAMETERS)
 			ret = handle_rcr_op(dev, cmd);
+		break;
 	case COMPARE_AND_WRITE:
 		ret = handle_caw(dev, cmd);
 		break;
