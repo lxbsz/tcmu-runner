@@ -643,6 +643,13 @@ finish_page83:
 		 */
 		data[5] = 0x04;
 
+		/*
+		 * The logical block provisioning unmap (LBPU) field.
+		 *
+		 * This will enable the UNMAP command for the device server.
+		 */
+		data[5] |= 0x80;
+
 		tcmu_memcpy_into_iovec(iovec, iov_cnt, data, sizeof(data));
 		return SAM_STAT_GOOD;
 	}
