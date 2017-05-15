@@ -760,6 +760,9 @@ struct tcmur_handler tcmu_rbd_handler = {
 	.name	       = "Ceph RBD handler",
 	.subtype       = "rbd",
 	.cfg_desc      = tcmu_rbd_cfg_desc,
+#ifdef LIBRBD_SUPPORTS_DISCARD
+	.flags         = TCMUR_SCSI_UNMAP_SUP,
+#endif
 	.open	       = tcmu_rbd_open,
 	.close	       = tcmu_rbd_close,
 	.read	       = tcmu_rbd_read,

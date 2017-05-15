@@ -48,6 +48,12 @@ struct tcmur_handler {
 	const char *subtype;	/* Name for cfgstring matching */
 	const char *cfg_desc;	/* Description of this backstore's config string */
 
+#define TCMUR_SCSI_UNMAP_SUP 0x0001 /* UNMAP support */
+#define TCMUR_SCSI_XCOPY_SUP 0x0002 /* XCOPY support */
+#define TCMUR_SCSI_CAW_SUP   0x0004 /* COMPARE AND WRITE support */
+#define TCMUR_SCSI_WS_SUP    0x0008 /* WRITE SAME support */
+	uint32_t flags;
+
 	void *opaque;		/* Handler private data. */
 
 	/*
