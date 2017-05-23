@@ -1697,6 +1697,7 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	case WRITE_VERIFY_16:
 		ret = handle_write_verify(dev, cmd);
 		break;
+	case WRITE_SAME:
 	case WRITE_SAME_16:
 		ret = handle_write_same_16(dev, cmd);
 		break;
