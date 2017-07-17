@@ -44,6 +44,11 @@
 #define RBD_LOCK_ACQUIRE_SUPPORT 1
 #endif
 
+/* rbd_aio_discard added in 0.1.2 */
+#if LIBRBD_VERSION_CODE >= LIBRBD_VERSION(0, 1, 2)
+#define LIBRBD_SUPPORTS_DISCARD
+#endif
+
 enum {
 	TCMU_RBD_OPENING,
 	TCMU_RBD_OPENED,
@@ -571,7 +576,8 @@ static void rbd_finish_aio_generic(rbd_completion_t completion,
 		tcmu_r = SAM_STAT_GOOD;
 	}
 
-	tcmulib_cmd->done(dev, tcmulib_cmd, tcmu_r);
+	if (tcmulib_cmd->done)
+		tcmulib_cmd->done(dev, tcmulib_cmd, tcmu_r);
 
 	if (aio_cb->bounce_buffer) {
 		free(aio_cb->bounce_buffer);
@@ -629,6 +635,223 @@ out_free_aio_cb:
 	free(aio_cb);
 out:
 	return SAM_STAT_TASK_SET_FULL;
+}
+
+#ifdef LIBRBD_SUPPORTS_DISCARD
+static int tcmu_rbd_aio_discard(struct tcmu_device *dev,
+				struct tcmulib_cmd *cmd,
+				uint64_t off, uint64_t len)
+{
+	struct tcmu_rbd_state *state = tcmu_get_dev_private(dev);
+	struct rbd_aio_cb *aio_cb;
+	rbd_completion_t completion;
+	ssize_t ret;
+
+	aio_cb = calloc(1, sizeof(*aio_cb));
+	if (!aio_cb) {
+		tcmu_dev_err(dev, "Could not allocate aio_cb.\n");
+		goto out;
+	}
+
+	aio_cb->dev = dev;
+	aio_cb->tcmulib_cmd = cmd;
+	aio_cb->bounce_buffer = NULL;
+
+	ret = rbd_aio_create_completion
+		(aio_cb, (rbd_callback_t) rbd_finish_aio_generic, &completion);
+	if (ret < 0)
+		goto out_free_aio_cb;
+
+	ret = rbd_aio_discard(state->image, off, len, completion);
+	if (ret < 0)
+		goto out_remove_tracked_aio;
+
+	return 0;
+
+out_remove_tracked_aio:
+	rbd_aio_release(completion);
+out_free_aio_cb:
+	free(aio_cb);
+out:
+	return SAM_STAT_TASK_SET_FULL;
+}
+
+static int tcmu_rbd_discard(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+{
+	uint8_t *cdb = cmd->cdb;
+	size_t copied, data_length = tcmu_get_xfer_length(cdb);
+	uint32_t block_size = tcmu_get_dev_block_size(dev);
+	uint64_t end_lba = tcmu_get_dev_num_lbas(dev) - 1;
+	uint8_t *sense = cmd->sense_buf;
+	uint8_t *par, *p;
+	uint16_t dl, bddl;
+	int ret;
+
+	/*
+	 * ANCHOR bit check
+	 *
+	 * The ANCHOR in the Logical Block Provisioning VPD page is not
+	 * supported, so the ANCHOR bit shouldn't be set here.
+	 */
+	if (cdb[1] & 0x01) {
+		tcmu_dev_err(dev, "Illegal request: anchor is not supported for now!\n");
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_INVALID_FIELD_IN_CDB,
+					   NULL);
+	}
+
+	/*
+	 * PARAMETER LIST LENGTH field.
+	 *
+	 * The PARAMETER LIST LENGTH field specifies the length in bytes of
+	 * the UNMAP parameter data that shall be sent from the application
+	 * client to the device server.
+	 *
+	 * A PARAMETER LIST LENGTH set to zero specifies that no data shall
+	 * be sent.
+	 */
+	if (!data_length) {
+		tcmu_dev_dbg(dev, "Data-Out Buffer length is zero, just return okay\n");
+		return SAM_STAT_GOOD;
+	}
+
+	/*
+	 * From sbc4r13, section 5.32.1 UNMAP command overview.
+	 *
+	 * The PARAMETER LIST LENGTH should be greater than eight,
+	 */
+	if (data_length < 8) {
+		tcmu_dev_err(dev, "Illegal parameter list length %llu and it should be >= 8\n",
+			     data_length);
+		return tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					   ASC_PARAMETER_LIST_LENGTH_ERROR,
+					   NULL);
+	}
+
+	par = calloc(1, data_length);
+	if (!par) {
+		return tcmu_set_sense_data(sense, HARDWARE_ERROR,
+					   ASC_INTERNAL_TARGET_FAILURE,
+					   NULL);
+
+	}
+	copied = tcmu_memcpy_from_iovec(par, data_length, cmd->iovec,
+					cmd->iov_cnt);
+	if (copied != data_length) {
+		tcmu_dev_err(dev, "Failed to copy the Data-Out Buffer !\n");
+		ret = tcmu_set_sense_data(cmd->sense_buf, ILLEGAL_REQUEST,
+					  ASC_PARAMETER_LIST_LENGTH_ERROR,
+					  NULL);
+		goto out_free_par;
+	}
+
+	/*
+	 * If any UNMAP block descriptors in the UNMAP block descriptor
+	 * list are truncated due to the parameter list length in the CDB,
+	 * then that UNMAP block descriptor shall be ignored.
+	 *
+	 * So it will allow dl + 2 != data_length and bddl + 8 != data_length.
+	 */
+	dl = be16toh(*((uint16_t *)&par[0]));
+	bddl = be16toh(*((uint16_t *)&par[2]));
+
+	tcmu_dev_dbg(dev, "Data-Out Buffer Length: %zu, dl: %hu, bddl: %hu\n",
+		     data_length, dl, bddl);
+
+	/*
+	 * If the unmap block descriptor data length is not a multiple
+	 * of 16, then the last unmap block descriptor is incomplete
+	 * and shall be ignored.
+	 */
+	bddl &= ~0xF;
+
+	/*
+	 * If the UNMAP BLOCK DESCRIPTOR DATA LENGTH is set to zero, then
+	 * no unmap block descriptors are included in the UNMAP parameter
+	 * list.
+	 */
+	if (!bddl) {
+		ret = SAM_STAT_GOOD;
+		goto out_free_par;
+	}
+
+	if (bddl / 16 > VPD_MAX_UNMAP_BLOCK_DESC_COUNT) {
+		tcmu_dev_err(dev, "Illegal parameter list count %hu exceeds :%u\n",
+			     bddl / 16, VPD_MAX_UNMAP_BLOCK_DESC_COUNT);
+		ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+					  ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+					  NULL);
+		goto out_free_par;
+	}
+
+	/* The first descriptor list offset is 8 in Data-Out buffer */
+	p = par + 8;
+
+	while (bddl) {
+		uint64_t lba;
+		uint32_t nlbas;
+		uint16_t offset = 0, i = 0;
+
+		lba = be64toh(*((uint64_t *)&p[offset]));
+		nlbas = be32toh(*((uint32_t *)&p[offset + 8]));
+
+		if (nlbas > VPD_MAX_UNMAP_LBA_COUNT) {
+			tcmu_dev_err(dev, "Illegal parameter list LBA count %lu exceeds:%u\n",
+				     nlbas, VPD_MAX_UNMAP_LBA_COUNT);
+			ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+						  ASC_INVALID_FIELD_IN_PARAMETER_LIST,
+						  NULL);
+			goto out_free_par;
+		}
+
+		if (lba + nlbas > end_lba || lba + nlbas < lba) {
+			tcmu_dev_err(dev, "Illegal parameter list (lba + nlbas) %llu exceeds last lba %llu\n",
+				     lba + nlbas, end_lba);
+			ret = tcmu_set_sense_data(sense, ILLEGAL_REQUEST,
+						  ASC_LBA_OUT_OF_RANGE,
+						  NULL);
+			goto out_free_par;
+		}
+
+		tcmu_dev_dbg(dev, "Parameter list %d, lba: %llu, nlbas: %lu\n",
+			     i++, lba, nlbas);
+
+		ret = tcmu_rbd_aio_discard(dev, cmd, lba * block_size,
+					   nlbas * block_size);
+		if (ret < 0)
+			goto out_free_par;
+
+		/* The unmap block descriptor data length is 16 */
+		offset += 16;
+		bddl -= 16;
+	}
+
+out_free_par:
+	free(par);
+	return ret;
+}
+#endif
+
+/*
+ * Return scsi status or TCMU_NOT_HANDLED
+ */
+static int tcmu_rbd_handle_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+{
+	uint8_t *cdb = cmd->cdb;
+	int ret;
+
+	cmd->done = NULL;
+	switch(cdb[0]) {
+#ifdef LIBRBD_SUPPORTS_DISCARD
+	case UNMAP:
+		ret = tcmu_rbd_discard(dev, cmd);
+		break;
+#endif
+	default:
+		ret = TCMU_NOT_HANDLED;
+	}
+
+	return ret;
 }
 
 #ifdef LIBRBD_SUPPORTS_AIO_FLUSH
@@ -699,6 +922,7 @@ struct tcmur_handler tcmu_rbd_handler = {
 	.close	       = tcmu_rbd_close,
 	.read	       = tcmu_rbd_read,
 	.write	       = tcmu_rbd_write,
+	.handle_cmd    = tcmu_rbd_handle_cmd,
 #ifdef LIBRBD_SUPPORTS_AIO_FLUSH
 	.flush	       = tcmu_rbd_flush,
 #endif
