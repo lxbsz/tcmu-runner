@@ -28,4 +28,9 @@ bool tcmur_handler_is_passthrough_only(struct tcmur_handler *rhandler);
 void tcmur_command_complete(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 			    int ret);
 
+typedef int (*tcmur_handler_unmap_fn_t)(struct tcmu_device *dev,
+					struct tcmulib_cmd *cmd,
+					uint64_t off, uint64_t len);
+int tcmur_handle_unmap(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+		       tcmur_handler_unmap_fn_t unmap_fn);
 #endif /* __TCMUR_CMD_HANDLER_H */
