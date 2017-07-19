@@ -38,6 +38,7 @@ typedef int (*rw_fn_t)(struct tcmu_device *, struct tcmulib_cmd *,
 		       struct iovec *, size_t, size_t, off_t);
 typedef int (*flush_fn_t)(struct tcmu_device *, struct tcmulib_cmd *);
 typedef int (*handle_cmd_fn_t)(struct tcmu_device *, struct tcmulib_cmd *);
+typedef int (*handle_cmd_table_fn_t)(struct tcmu_device *, struct tcmulib_cmd *);
 
 struct tcmulib_cfg_info;
 
@@ -97,6 +98,12 @@ struct tcmur_handler {
 	 * the sense asc/ascq if needed.
 	 */
 	handle_cmd_fn_t handle_cmd;
+
+	/*
+	 * This will be needed and must for none passthough only handlers
+	 * with handle_cmd exist.
+	 */
+	handle_cmd_table_fn_t handle_cmd_table;
 
 	/*
 	 * Below callbacks are only exected called by generic_handle_cmd.
