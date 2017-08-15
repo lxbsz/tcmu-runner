@@ -8,7 +8,7 @@ A daemon that handles the userspace side of the LIO TCM-User backstore.
 
 The TCMU userspace-passthrough backstore allows a userspace process to handle requests to a LUN. But since the kernel-user interface that TCMU provides must be fast and flexible, it is complex enough that we'd like to avoid each  userspace handler having to write boilerplate code.
 
-**tcmu-runner** handles the messy details of the TCMU interface -- UIO, netlink, pthreads, and DBus -- and exports a more friendly C plugin module API. Modules using this API are called "TCMU handlers". Handler authors can write code just to handle the SCSI commands as desired, and can also link with whatever userspace libraries they like.
+*tcmu-runner* handles the messy details of the TCMU interface -- UIO, netlink, pthreads, and DBus -- and exports a more friendly C plugin module API. Modules using this API are called "TCMU handlers". Handler authors can write code just to handle the SCSI commands as desired, and can also link with whatever userspace libraries they like.
 
 ## Usage example
 
