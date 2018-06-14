@@ -14,16 +14,10 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <limits.h>
-#include <unistd.h>
-#include <sys/uio.h>
 #include <string.h>
-#include <scsi/scsi.h>
-#include <endian.h>
 #include <errno.h>
 
 #include "libtcmu_log.h"
-#include "libtcmu_common.h"
 #include "libtcmu.h"
 #include "libtcmu_priv.h"
 #include "libtcmu_tpg.h"

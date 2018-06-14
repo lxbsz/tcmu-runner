@@ -16,14 +16,9 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <ctype.h>
-#include <stdbool.h>
 
-#include "darray.h"
 #include "libtcmu_config.h"
 #include "libtcmu_log.h"
-
-#include "ccan/list/list.h"
 
 typedef enum {
 	TCMU_OPT_NONE = 0,

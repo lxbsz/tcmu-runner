@@ -8,16 +8,13 @@
 
 #define _GNU_SOURCE
 #include <stdint.h>
-#include <pthread.h>
 #include <unistd.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <limits.h>
 
-#include "darray.h"
 #include "libtcmu_log.h"
 #include "libtcmu_config.h"
 #include "libtcmu_time.h"

@@ -8,22 +8,9 @@
 
 #define _GNU_SOURCE
 #include <scsi/scsi.h>
-#include <errno.h>
-#include <inttypes.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
 
-#include "ccan/list/list.h"
-
-#include "darray.h"
-#include "libtcmu.h"
-#include "libtcmu_log.h"
 #include "libtcmu_priv.h"
-#include "libtcmu_common.h"
-#include "libtcmu_aio.h"
 #include "libtcmu_device.h"
-#include "tcmur_cmd_handler.h"
 #include "libtcmu_alua.h"
 #include "libtcmu_scsi.h"
 
@@ -39,7 +26,6 @@ int tcmur_cmd_passthrough_handler(struct tcmu_device *dev,
 				  struct tcmulib_cmd *cmd)
 {
 	struct tcmulib_backstore_handler *rhandler = tcmu_get_runner_handler(dev);
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
 	int ret;
 
 	if (!rhandler->handle_cmd)
@@ -58,10 +44,10 @@ int tcmur_cmd_passthrough_handler(struct tcmu_device *dev,
 	 * ->handle_cmd handled the passthough command here as well as in
 	 * handle_passthrough_cbk().
 	 */
-	track_aio_request_start(rdev);
+	track_aio_request_start(dev);
 	ret = handle_passthrough(dev, cmd);
 	if (ret != TCMU_STS_ASYNC_HANDLED)
-		track_aio_request_finish(rdev, NULL);
+		track_aio_request_finish(dev, NULL);
 
 	return ret;
 }
@@ -70,10 +56,9 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
 	int ret = TCMU_STS_NOT_HANDLED;
 	struct tcmulib_backstore_handler *rhandler = tcmu_get_runner_handler(dev);
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
 	uint8_t *cdb = cmd->cdb;
 
-	track_aio_request_start(rdev);
+	track_aio_request_start(dev);
 
 	if (tcmu_dev_in_recovery(dev)) {
 		ret = TCMU_STS_BUSY;
@@ -152,7 +137,7 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 
 untrack:
 	if (ret != TCMU_STS_ASYNC_HANDLED)
-		track_aio_request_finish(rdev, NULL);
+		track_aio_request_finish(dev, NULL);
 	return ret;
 }
 
@@ -215,13 +200,12 @@ static int handle_try_passthrough(struct tcmu_device *dev,
 				  struct tcmulib_cmd *cmd)
 {
 	struct tcmulib_backstore_handler *rhandler = tcmu_get_runner_handler(dev);
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
 	int ret;
 
 	if (!rhandler->handle_cmd)
 		return TCMU_STS_NOT_HANDLED;
 
-	track_aio_request_start(rdev);
+	track_aio_request_start(dev);
 
 	if (tcmu_dev_in_recovery(dev)) {
 		ret = TCMU_STS_BUSY;
@@ -230,23 +214,22 @@ static int handle_try_passthrough(struct tcmu_device *dev,
 	}
 
 	if (ret != TCMU_STS_ASYNC_HANDLED)
-		track_aio_request_finish(rdev, NULL);
+		track_aio_request_finish(dev, NULL);
 
 	return ret;
 }
 
 int tcmur_generic_handle_cmd(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 {
-	struct tcmur_device *rdev = tcmu_get_daemon_dev_private(dev);
 	int ret;
 
-	ret = handle_pending_ua(rdev, cmd);
+	ret = handle_pending_ua(dev, cmd);
 	if (ret != TCMU_STS_NOT_HANDLED)
 		return ret;
 
-	if (rdev->flags & TCMUR_DEV_FLAG_FORMATTING && cmd->cdb[0] != INQUIRY) {
+	if (dev->flags & TCMUR_DEV_FLAG_FORMATTING && cmd->cdb[0] != INQUIRY) {
 		tcmu_set_sense_key_specific_info(cmd->sense_buf,
-						 rdev->format_progress);
+						 dev->format_progress);
 		return TCMU_STS_FRMT_IN_PROGRESS;
 	}
 
