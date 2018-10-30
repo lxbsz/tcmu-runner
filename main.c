@@ -47,6 +47,7 @@
 #include "version.h"
 #include "libtcmu_config.h"
 #include "libtcmu_log.h"
+#include "libtcmu_timer.h"
 
 # define TCMU_LOCK_FILE   "/var/run/lock/tcmu.lock"
 
@@ -1022,6 +1023,8 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
+	tcmu_timer_base_init();
+
 	while (1) {
 		int option_index = 0;
 		int c, nr_files;
@@ -1233,6 +1236,8 @@ free_config:
 	tcmu_free_config(tcmu_cfg);
 	if (new_path)
 		free(handler_path);
+
+	tcmu_timer_base_fini();
 
 	if (ret)
 		exit(EXIT_FAILURE);
