@@ -34,6 +34,7 @@ pkg_check_modules(KMOD REQUIRED libkmod)
 
 find_library(PTHREAD pthread)
 find_library(DL dl)
+find_library(LIBUV uv)
 
 # Stuff for building the shared library
 add_library(tcmu
@@ -47,6 +48,7 @@ add_library(tcmu
   libtcmu_log.c
   libtcmu_config.c
   libtcmu_time.c
+  libtcmu_timer.c
   )
 set_target_properties(tcmu
   PROPERTIES
@@ -59,6 +61,7 @@ target_include_directories(tcmu
   )
 target_link_libraries(tcmu
   ${LIBNL_LIB}
+  ${LIBUV}
   ${LIBNL_GENL_LIB}
   ${GLIB_LIBRARIES}
   )
@@ -75,6 +78,7 @@ add_library(tcmu_static
   libtcmu_log.c
   libtcmu_config.c
   libtcmu_time.c
+  libtcmu_timer.c
   )
 target_include_directories(tcmu_static
   PUBLIC ${LIBNL_INCLUDE_DIR}
