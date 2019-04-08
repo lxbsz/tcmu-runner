@@ -581,6 +581,10 @@ static void glfs_async_cbk(glfs_fd_t *fd, ssize_t ret, void *data)
 	struct tcmulib_cmd *cmd = cookie->cmd;
 	size_t length = cookie->length;
 
+#if 1
+	static int i = 0;
+	if (i++ % 1000 == 0) return;
+#endif
 	if (ret < 0 || ret != length) {
 		/* Read/write/flush failed */
 		switch (cookie->op) {

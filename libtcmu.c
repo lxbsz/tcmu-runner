@@ -1155,10 +1155,11 @@ void tcmulib_command_complete(
 	}
 
 	TCMU_UPDATE_RB_TAIL(mb, ent);
-
+#if 0
 	if (cmd->timer)
 		free(cmd->timer);
 	free(cmd);
+#endif
 }
 
 void tcmulib_processing_start(struct tcmu_device *dev)

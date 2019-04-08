@@ -69,6 +69,7 @@ static void tcmur_cmd_timeout(struct tcmu_timer *timer)
 	struct tcmu_device *dev = cmd->dev;
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 
+	tcmu_err("lxb--=====\n");
 	if (cmd->timeout >= CMD_TO_30SEC)
 		return;
 
@@ -80,9 +81,9 @@ static void tcmur_cmd_timeout(struct tcmu_timer *timer)
 		cmd->timeout += CMD_TO_STEP;
 	}
 	dev->timeout_cmds[cmd->timeout / CMD_TO_STEP - 1]++;
+	tcmu_reset_timer(timer);
 	pthread_spin_unlock(&rdev->lock);
 
-	tcmu_reset_timer(timer);
 	pthread_cond_signal(&pending_cmds_cond);
 }
 

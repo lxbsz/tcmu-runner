@@ -26,7 +26,7 @@
 
 static pthread_t timer_thread;
 static uv_loop_t *tcmu_uv_loop;
-static tcmu_timer_t *loop_timer;
+static tcmu_timer_t loop_timer;
 
 static pthread_spinlock_t timer_lock;
 
@@ -34,10 +34,12 @@ static void tcmu_timer_cbk(uv_timer_t* uv_timer)
 {
 	tcmu_timer_t *timer;
 
+	tcmu_err("lxb------\n");
 	pthread_spin_lock(&timer_lock);
 	timer = container_of(uv_timer, tcmu_timer_t, uv_timer);
 
-	timer->cbk(timer);
+	if (timer->cbk)
+		timer->cbk(timer);
 	pthread_spin_unlock(&timer_lock);
 }
 
@@ -48,11 +50,14 @@ static void tcmu_timer_cbk(uv_timer_t* uv_timer)
 void tcmu_init_timer(tcmu_timer_t *timer, uint64_t timeout, uint64_t repeat,
 		     tcmu_timer_cbk_t cbk)
 {
-	if (!timer)
+	if (!timer || !cbk)
 		return;
 
-	timer->expires = timeout;
-	timer->repeat = repeat;
+	if (!timeout && !repeat)
+		return;
+
+	timer->expires = timeout * 1000;
+	timer->repeat = repeat * 1000;
 	timer->cbk = cbk;
 
 	bzero(&timer->uv_timer, sizeof(uv_timer_t));
@@ -119,7 +124,9 @@ static void *tcmu_timer_base_thread_start(void *arg)
 	}
 	pthread_spin_unlock(&timer_lock);
 
+	tcmu_err("lxb ====== before Timer loop is not init yet!\n");
 	uv_run(tcmu_uv_loop, UV_RUN_DEFAULT);
+	tcmu_err("lxb ===== after Timer loop is not init yet!\n");
 
 	return NULL;
 }
@@ -143,12 +150,15 @@ void tcmu_timer_base_init(void)
 	 * Make sure that the loop_timer will be exist
 	 * forever then the uv_run won't stop
 	 */
-	loop_timer = malloc(sizeof(*loop_timer));
-	loop_timer->expires = 0xefffffffffffffff;
-	loop_timer->repeat = 0xefffffffffffffff;
-	uv_timer_init(tcmu_uv_loop, &loop_timer->uv_timer);
-	uv_timer_start(&loop_timer->uv_timer, tcmu_timer_cbk,
-		       loop_timer->expires, loop_timer->repeat);
+//	loop_timer.expires = 0xefffffffffffffff;
+//	loop_timer.repeat = 0xefffffffffffffff;
+	loop_timer.expires = 5000;
+	loop_timer.repeat = 5000;
+	loop_timer.cbk = NULL;
+	bzero(&loop_timer.uv_timer, sizeof(uv_timer_t));
+	uv_timer_init(tcmu_uv_loop, &loop_timer.uv_timer);
+	uv_timer_start(&loop_timer.uv_timer, tcmu_timer_cbk,
+		       loop_timer.expires, loop_timer.repeat);
 
 	pthread_create(&timer_thread, NULL, tcmu_timer_base_thread_start, NULL);
 }
@@ -166,11 +176,8 @@ void tcmu_timer_base_fini(void)
 
 	uv_loop_close(tcmu_uv_loop);
 	tcmu_uv_loop = NULL;
-	free(loop_timer);
-	loop_timer = NULL;
 	pthread_spin_unlock(&timer_lock);
 	pthread_spin_destroy(&timer_lock);
 
-	pthread_cancel(timer_thread);
 	pthread_join(timer_thread, NULL);
 }

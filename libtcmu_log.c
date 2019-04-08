@@ -527,6 +527,7 @@ static void *log_thread_pending_start(void *arg)
 		pthread_mutex_lock(&pending_cmds_lock);
 		pthread_cond_wait(&pending_cmds_cond, &pending_cmds_lock);
 		list_for_each_safe(&pending_cmds_head, dev, tmp, entry) {
+#if 0
 			if (!dev->timeout_cmds[CMD_TO_30SEC / CMD_TO_STEP - 1] &&
 			    !dev->timeout_cmds[CMD_TO_25SEC / CMD_TO_STEP - 1] &&
 			    !dev->timeout_cmds[CMD_TO_20SEC / CMD_TO_STEP - 1] &&
@@ -534,7 +535,7 @@ static void *log_thread_pending_start(void *arg)
 			    !dev->timeout_cmds[CMD_TO_10SEC / CMD_TO_STEP - 1] &&
 			    !dev->timeout_cmds[CMD_TO_5SEC / CMD_TO_STEP - 1])
 				continue;
-
+#endif
 			tcmu_dev_warn_timeout(dev,
 					     "Pending cmds: 30(+)s:[%lu], 25s:[%lu], 20s:[%lu], 15s:[%lu], 10s:[%lu], 5s:[%lu]\n",
 					     dev->timeout_cmds[CMD_TO_30SEC / CMD_TO_STEP - 1],
