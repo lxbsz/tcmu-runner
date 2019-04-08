@@ -63,7 +63,7 @@ static void aio_command_finish(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
 	}
 }
 
-static void tcmur_cmd_timeout(struct tcmu_timer *timer)
+static void tcmur_cmd_timeout(tcmu_timer_t *timer)
 {
 	struct tcmulib_cmd *cmd = (struct tcmulib_cmd *)timer->data;
 	struct tcmu_device *dev = cmd->dev;
@@ -81,9 +81,9 @@ static void tcmur_cmd_timeout(struct tcmu_timer *timer)
 		cmd->timeout += CMD_TO_STEP;
 	}
 	dev->timeout_cmds[cmd->timeout / CMD_TO_STEP - 1]++;
-	tcmu_reset_timer(timer);
 	pthread_spin_unlock(&rdev->lock);
 
+//	tcmu_reset_timer(timer);
 	pthread_cond_signal(&pending_cmds_cond);
 }
 
@@ -2244,7 +2244,7 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	uint8_t *cdb = cmd->cdb;
-	struct tcmu_timer *timer;
+	tcmu_timer_t *timer;
 
 
 	track_aio_request_start(rdev);
@@ -2282,16 +2282,14 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 		break;
 	}
 
-	timer = malloc(sizeof(*timer));
+	timer = calloc(1, sizeof(*timer));
 	if (!timer) {
 		tcmu_dev_err(dev, "malloc timer failed!\n");
 		goto untrack;
 	}
 
-	timer->data = cmd;
+	tcmu_mod_timer(timer, CMD_TO_STEP, tcmur_cmd_timeout);
 	cmd->timer = timer;
-	tcmu_init_timer(timer, CMD_TO_STEP, 0, tcmur_cmd_timeout);
-	tcmu_add_timer(timer);
 
 	switch(cdb[0]) {
 	case READ_6:
@@ -2337,8 +2335,10 @@ static int tcmur_cmd_handler(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 
 untrack:
 	if (ret != TCMU_STS_ASYNC_HANDLED) {
-		if (timer)
+		if (timer) {
+			cmd->timer = NULL;
 			tcmu_del_timer(timer);
+		}
 		track_aio_request_finish(rdev, NULL);
 	}
 	return ret;

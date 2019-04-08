@@ -14,6 +14,7 @@
 #define __LIBTCMU_COMMON_H
 
 #include <stdbool.h>
+#include "libtcmu_timer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -113,7 +114,7 @@ struct tcmulib_cmd {
 	cmd_done_t done;
 
 	struct tcmu_device *dev;
-	struct tcmu_timer *timer;
+	tcmu_timer_t *timer;
 	uint16_t timeout;
 };
 
