@@ -32,10 +32,40 @@ enum {
 };
 
 enum {
+	TCMUR_DEV_LOCK_UNKNOWN,
 	TCMUR_DEV_LOCK_UNLOCKED,
 	TCMUR_DEV_LOCK_LOCKED,
+
+	/*
+	 * After the connection lost and before the first read fop
+	 * coming there was no any write fop for the device, then
+	 * the first read fop will set it and then reopen the device
+	 * without acquiring the lock later.
+	 */
+	TCMUR_DEV_LOCK_READ_REOPENING,
+
+	/*
+	 * After the connection lost and the first fop is read and
+	 * it has reopened the device successfuly.
+	 */
+	TCMUR_DEV_LOCK_READ_REOPENED,
+
+	/*
+	 * After the connection lost and before the first write fop
+	 * coming there already have some reads trying to reopen the
+	 * device but not finished yet.
+	 */
+	TCMUR_DEV_LOCK_READ_REOPENING_TO_LOCKING,
+
+	/*
+	 * After the connection lost, and before the first write fop
+	 * coming there already have some reads have reopened the
+	 * device without acquiring the lock.
+	 */
+	TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING,
+
+	/* The first fop is write after the connection lost. */
 	TCMUR_DEV_LOCK_LOCKING,
-	TCMUR_DEV_LOCK_UNKNOWN,
 };
 
 struct tcmur_work;

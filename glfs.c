@@ -922,7 +922,7 @@ static int tcmu_glfs_to_sts(int rc)
 	}
 }
 
-static int tcmu_glfs_lock(struct tcmu_device *dev, uint16_t tag)
+static int tcmu_glfs_lock(struct tcmu_device *dev, uint16_t tag, bool break_lock_only)
 {
 	struct glfs_state *state = tcmur_dev_get_private(dev);
 	struct flock lock;

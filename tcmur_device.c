@@ -403,6 +403,7 @@ int tcmu_acquire_dev_lock(struct tcmu_device *dev, uint16_t tag)
 	struct tcmur_handler *rhandler = tcmu_get_runner_handler(dev);
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	int retries = 0, ret = TCMU_STS_HW_ERR;
+	bool break_lock_only = true;
 	bool reopen;
 
 	tcmu_dev_dbg(dev, "Waiting for outstanding commands to complete\n");
@@ -411,11 +412,23 @@ int tcmu_acquire_dev_lock(struct tcmu_device *dev, uint16_t tag)
 		goto done;
 	}
 
+	/*
+	 * Since we are here the lock state must be one of:
+	 *    TCMUR_DEV_LOCK_READ_REOPENING,
+	 *    TCMUR_DEV_LOCK_READ_REOPENING_TO_LOCKING,
+	 *    TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING,
+	 *    TCMUR_DEV_LOCK_LOCKING,
+	 */
+
 	reopen = false;
 	pthread_mutex_lock(&rdev->state_lock);
-	if (rdev->lock_lost || !(rdev->flags & TCMUR_DEV_FLAG_IS_OPEN)) {
+	if (rdev->lock_lost || !(rdev->flags & TCMUR_DEV_FLAG_IS_OPEN) ||
+	    rdev->lock_state != TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING) {
 		reopen = true;
 	}
+
+	if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING)
+		break_lock_only = false;
 	pthread_mutex_unlock(&rdev->state_lock);
 
 retry:
@@ -432,9 +445,13 @@ retry:
 			ret = TCMU_STS_FENCED;
 			goto drop_conn;
 		}
+		pthread_mutex_lock(&rdev->state_lock);
+		if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING)
+			rdev->lock_state = TCMUR_DEV_LOCK_READ_REOPENED;
+		pthread_mutex_unlock(&rdev->state_lock);
 	}
 
-	ret = rhandler->lock(dev, tag);
+	ret = rhandler->lock(dev, tag, break_lock_only);
 	if (ret == TCMU_STS_FENCED) {
 		if (retries < 1) {
 			reopen = true;

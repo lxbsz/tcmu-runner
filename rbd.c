@@ -700,12 +700,14 @@ static int tcmu_rbd_lock_break(struct tcmu_device *dev)
 	char *owners[1];
 	size_t num_owners = 1;
 	int ret;
+	int ret1;
 
 	ret = rbd_lock_get_owners(state->image, &lock_mode, owners,
 				  &num_owners);
 	if (ret == -ENOENT || (!ret && !num_owners))
 		return 0;
 
+	tcmu_dev_err(dev, "lock owner before break %s\n", owners[0]);
 	if (ret < 0) {
 		tcmu_dev_err(dev, "Could not get lock owners to break lock %d\n",
 			     ret);
@@ -725,6 +727,12 @@ static int tcmu_rbd_lock_break(struct tcmu_device *dev)
 		tcmu_dev_err(dev, "Could not break lock from %s. (Err %d)\n",
 			     owners[0], ret);
 free_owners:
+	rbd_lock_get_owners_cleanup(owners, num_owners);
+	ret1 = rbd_lock_get_owners(state->image, &lock_mode, owners,
+				  &num_owners);
+	tcmu_dev_err(dev, "lock owner after break %ld, %d\n", num_owners, ret1);
+
+	tcmu_dev_err(dev, "lock owner after break %s\n", owners[0]);
 	rbd_lock_get_owners_cleanup(owners, num_owners);
 	return ret;
 }
@@ -877,7 +885,7 @@ static int tcmu_rbd_unlock(struct tcmu_device *dev)
 	return tcmu_rbd_to_sts(ret);
 }
 
-static int tcmu_rbd_lock(struct tcmu_device *dev, uint16_t tag)
+static int tcmu_rbd_lock(struct tcmu_device *dev, uint16_t tag, bool break_lock_only)
 {
 	struct tcmu_rbd_state *state = tcmur_dev_get_private(dev);
 #if !defined LIBRADOS_SUPPORTS_GETADDRS && defined RBD_LOCK_ACQUIRE_SUPPORT
@@ -885,6 +893,7 @@ static int tcmu_rbd_lock(struct tcmu_device *dev, uint16_t tag)
 	char *owners1[1], *owners2[1];
 	size_t num_owners1 = 1, num_owners2 = 1;
 #endif
+	bool has_lock = true;
 	int ret;
 
 	ret = tcmu_rbd_has_lock(dev);
@@ -900,6 +909,9 @@ static int tcmu_rbd_lock(struct tcmu_device *dev, uint16_t tag)
 
 	ret = tcmu_rbd_lock_break(dev);
 	if (ret)
+		goto done;
+
+	if (break_lock_only)
 		goto done;
 
 	ret = rbd_lock_acquire(state->image, RBD_LOCK_MODE_EXCLUSIVE);
@@ -947,7 +959,9 @@ set_lock_tag:
 		ret = tcmu_rbd_set_lock_tag(dev, tag);
 
 done:
-	tcmu_rbd_service_status_update(dev, ret == 0 ? true : false);
+	if (break_lock_only || ret)
+		has_lock = false;
+	tcmu_rbd_service_status_update(dev, has_lock);
 	return tcmu_rbd_to_sts(ret);
 }
 

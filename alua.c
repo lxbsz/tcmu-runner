@@ -551,7 +551,8 @@ static void alua_event_work_fn(void *arg)
 	tcmu_acquire_dev_lock(dev, -1);
 }
 
-int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd,
+			     bool is_read)
 {
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 	int ret = TCMU_STS_OK;
@@ -561,16 +562,76 @@ int alua_implicit_transition(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 
 	pthread_mutex_lock(&rdev->state_lock);
 	if (rdev->lock_state == TCMUR_DEV_LOCK_LOCKED) {
+		/* In any case this state is good */
 		goto done;
 	} else if (rdev->lock_state == TCMUR_DEV_LOCK_LOCKING) {
+		/* In any case this state should return busy */
 		tcmu_dev_dbg(dev, "Lock acquisition operation is already in process.\n");
 		ret = TCMU_STS_BUSY;
 		goto done;
+	} else if (is_read) {
+	       if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING ||
+		   rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING_TO_LOCKING) {
+			/*
+			 * For read case if the reopening is already in process just
+			 * return busy
+			 */
+			tcmu_dev_dbg(dev, "Reopen for reads operation is already in process.\n");
+			ret = TCMU_STS_BUSY;
+			goto done;
+		} else if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENED ||
+			   rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING) {
+			/* For read case if state already is reopened */
+			goto done;
+		}
+	} else { /* For writes */
+	       if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING_TO_LOCKING ||
+		   rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING) {
+			tcmu_dev_dbg(dev, "Locking for writes operation is already in process.\n");
+			ret = TCMU_STS_BUSY;
+			goto done;
+		}
 	}
 
-	tcmu_dev_info(dev, "Starting lock acquisition operation.\n");
+	if (is_read) {
+		tcmu_dev_info(dev, "Starting reopen operation for reads.\n");
+		/*
+		 * Since we are here, current lock state should be one of:
+		 *   TCMUR_DEV_LOCK_UNLOCKED
+		 *   TCMUR_DEV_LOCK_UNKNOWN
+		 *
+		 * For read fops we won't acquire the lock and will only
+		 * need to reopen the device
+		 */
+		rdev->lock_state = TCMUR_DEV_LOCK_READ_REOPENING;
+	} else {
+		tcmu_dev_info(dev, "Starting lock acquisition operation for writes.\n");
 
-	rdev->lock_state = TCMUR_DEV_LOCK_LOCKING;
+		/*
+		 * Since we are here, current lock state should be one of:
+		 *   TCMUR_DEV_LOCK_UNLOCKED
+		 *   TCMUR_DEV_LOCK_READ_REOPENING,
+		 *   TCMUR_DEV_LOCK_READ_REOPENED,
+		 *   TCMUR_DEV_LOCK_UNKNOWN
+		 */
+
+		if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENING) {
+			/*
+			 * For write case if it's in reopening state we need to upgrade the
+			 * state to REOPENING_TO_LOCKING to acquire the lock
+			 */
+			rdev->lock_state = TCMUR_DEV_LOCK_READ_REOPENING_TO_LOCKING;
+		} else if (rdev->lock_state == TCMUR_DEV_LOCK_READ_REOPENED) {
+			/*
+			 * For write case if it in reopened state we need to upgrade the
+			 * state to REOPENED_TO_LOCKING to acquire the lock
+			 */
+			rdev->lock_state = TCMUR_DEV_LOCK_READ_REOPENED_TO_LOCKING;
+		} else {
+			/* Need to reopen and acquire the lock */
+			rdev->lock_state = TCMUR_DEV_LOCK_LOCKING;
+		}
+	}
 
 	/*
 	 * The initiator is going to be queueing commands, so do this
@@ -760,7 +821,7 @@ free_buf:
 	return ret;
 }
 
-int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
+int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd, bool is_read)
 {
 	struct tcmur_device *rdev = tcmu_dev_get_private(dev);
 
@@ -770,7 +831,7 @@ int alua_check_state(struct tcmu_device *dev, struct tcmulib_cmd *cmd)
 			return TCMU_STS_FENCED;
 		}
 	} else if (rdev->failover_type == TCMUR_DEV_FAILOVER_IMPLICIT) {
-		return alua_implicit_transition(dev, cmd);
+		return alua_implicit_transition(dev, cmd, is_read);
 	}
 
 	return TCMU_STS_OK;
