@@ -1443,7 +1443,11 @@ static int tcmu_rbd_unmap(struct tcmu_device *dev, struct tcmur_cmd *tcmur_cmd,
 	if (ret < 0)
 		goto out_free_aio_cb;
 
+#if LIBRBD_SUPPORTS_WRITE_ZEROES
+	ret = rbd_aio_write_zeroes(state->image, off, len, completion, 0, 0);
+#else
 	ret = rbd_aio_discard(state->image, off, len, completion);
+#endif
 	if (ret < 0)
 		goto out_remove_tracked_aio;
 
